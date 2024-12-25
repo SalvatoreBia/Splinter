@@ -4,4 +4,4 @@ A simple, open-source tool to split audio tracks into components, with the help 
 
 ## Installation
 
-You first need to clone the repository. Then you just simply run either `build.bat` or `build.sh`, depending on your operating system. This will create a virtual environment and install all the necessary dependencies.
+I planned to provide a build script for both windows and linux, but I promise I will write them.
