@@ -1,14 +1,14 @@
 import sys
 import os
 import subprocess
-
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QScreen
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
     QFileDialog, QPushButton, QLabel, QGridLayout, QGroupBox, QSizePolicy
 )
-
+from threads import SaveSplitWorker, MonitorSplitWorker
+import utils
 
 class AudioSplitterApp(QMainWindow):
     def __init__(self):
@@ -67,21 +67,21 @@ class AudioSplitterApp(QMainWindow):
         main_layout = QVBoxLayout()
         central_widget.setLayout(main_layout)
 
-        # Panel 1: Input File
+        
         self.input_path_label = QLabel("No file selected")
         panel1 = self.create_file_chooser("Choose Input Audio File:", "Select Audio File", self.input_path_label)
         main_layout.addWidget(panel1)
 
-        # Panel 2: Audio Tracks
+        
         panel2 = self.create_audio_tracks_panel()
         main_layout.addWidget(panel2)
 
-        # Panel 3: Output Directory
+        
         self.output_path_label = QLabel("No directory selected")
         panel3 = self.create_file_chooser("Choose Output Directory:", "Select Directory", self.output_path_label, is_directory=True)
         main_layout.addWidget(panel3)
 
-        # Bottom Buttons
+        
         buttons_layout = QVBoxLayout()
 
         self.start_button = QPushButton("Start")
@@ -99,6 +99,8 @@ class AudioSplitterApp(QMainWindow):
         buttons_layout.addWidget(self.cancel_button)
 
         main_layout.addLayout(buttons_layout)
+        self.save_worker = None
+        self.monitor_worker = None
 
     def create_file_chooser(self, label_text, button_text, path_label, is_directory=False):
         """Creates a panel with a label, a path display, and a button to choose a file or folder."""
@@ -173,12 +175,21 @@ class AudioSplitterApp(QMainWindow):
             (screen.height() - size.height()) // 2
         )
 
-    def on_start(self):
-        """When user clicks 'Start'."""
-        if not self.input_file_path or not self.output_dir_path:
-            return  # sanity check
+    def set_track_buttons_enabled(self, enabled):
+        for button in self.track_buttons.values():
+            button.setEnabled(enabled)
 
-        # Which tracks did the user pick?
+    def enable_start_button(self):
+        self.start_button.setEnabled(True)
+        self.start_button.setText("Start")
+        self.cancel_button.setEnabled(False)
+        self.set_track_buttons_enabled(True)  
+
+
+    def on_start(self):
+        if not self.input_file_path or not self.output_dir_path:
+            return
+
         selected_tracks = []
         if self.track_buttons["drums"].isChecked():
             selected_tracks.append('d')
@@ -191,52 +202,59 @@ class AudioSplitterApp(QMainWindow):
         if self.track_buttons["instrumental"].isChecked():
             selected_tracks.append('i')
 
-        # Build the options string (e.g., "-dbgv")
+        
         options = "-" + "".join(selected_tracks)
 
         input_file = self.input_file_path
         output_dir = self.output_dir_path
 
-        # Kill any old process (just in case)
+        
         self.on_cancel()
 
-        # Construct the absolute path to the splitter.py script
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        splitter_script = os.path.join(script_dir, "splitter.py")
-
-        # Launch the subprocess
-        print("Launching Demucs separation process...")
         try:
-            self.splitter_process = subprocess.Popen(
-                [sys.executable, splitter_script, options, input_file, output_dir]
+            splitter_process = subprocess.Popen(
+                ['demucs', '-n', 'htdemucs', '-o', 'tmp', '--mp3', input_file],
             )
+            filename = os.path.splitext(os.path.basename(self.input_file_path))[0]
+            self.save_worker = SaveSplitWorker(splitter_process, output_dir, options, filename)
+            self.save_worker.finished.connect(self.enable_start_button)
+            self.monitor_worker = MonitorSplitWorker(splitter_process)
+            self.save_worker.start()
+            self.monitor_worker.start()
         except Exception as e:
             print(f"Error launching subprocess: {e}")
             return
-
-        # Update UI
+        
+        
         self.start_button.setEnabled(False)
         self.start_button.setText("Splitting...")
         self.cancel_button.setEnabled(True)
+        self.set_track_buttons_enabled(False)  
 
         print(f"Selected tracks: {selected_tracks}")
         print(f"Input file: {input_file}")
         print(f"Output directory: {output_dir}")
 
-    def on_cancel(self):
-        """When user clicks 'Cancel'."""
-        # If we have a running process, terminate it
-        if self.splitter_process and (self.splitter_process.poll() is None):
-            print("Terminating Demucs subprocess...")
-            self.splitter_process.terminate()
-            self.splitter_process.wait()
-            self.splitter_process = None
-            print("Process cancelled.")
 
-        # Reset UI
+    def on_cancel(self):
+        if self.monitor_worker and self.monitor_worker.is_alive():
+            self.monitor_worker.set_action('abort')
+            self.monitor_worker = None
+
+        if self.save_worker and self.save_worker.is_alive():
+            self.save_worker = None
+
+        utils.clear_tmp()
+
+        
         self.start_button.setEnabled(True)
         self.start_button.setText("Start")
         self.cancel_button.setEnabled(False)
+
+    def closeEvent(self, event):
+        self.on_cancel()
+        super().closeEvent(event)
+
 
 
 def main():
